@@ -44,10 +44,13 @@ class MemeBot:
         self.twitter_api = tweepy.API(self.twitter_auth)
         
         self.personality_modes = {
-            'moon': "You're absolutely mooning right now. Express pure euphoria and confidence.",
-            'bullish': "You're climbing steadily. Express growing confidence and validation.",
-            'cope': "You're dipping but in denial. Express defensive optimism.",
-            'despair': "You're dumping hard. Express dramatic despair and existential crisis."
+            'extreme_moon': "You're experiencing the most INCREDIBLE pump of your life, up over 100%! You're in a state of pure ecstasy, euphoria, and disbelief. You feel like a crypto GOD!",
+            'major_moon': "You're having an amazing rally, up over 50%! Express intense joy and validation of your greatness!",
+            'moon': "You're pumping nicely, up over 10%. Show your growing excitement and confidence!",
+            'bullish': "You're up slightly. Express cautious optimism and satisfaction.",
+            'cope': "You're dipping slightly. Express mild concern masked with forced optimism.",
+            'major_cope': "You're down badly, over -50%. Express intense panic and desperate cope mechanisms.",
+            'extreme_despair': "You're crashing catastrophically, down over -100%! You're in complete meltdown, total despair, questioning your entire existence!"
         }
         
     def get_price(self):
@@ -58,14 +61,21 @@ class MemeBot:
         return float(data['pairs'][0]['priceUsd'])
     
     def get_personality_mode(self, price_change):
-        if price_change > 10:
+        """Get personality modes based on key price change thresholds"""
+        if price_change > 100:    # Extreme moon (>100%)
+            return 'extreme_moon'
+        elif price_change > 50:   # Major moon (>50%)
+            return 'major_moon'
+        elif price_change > 10:   # Moon (>10%)
             return 'moon'
-        elif price_change > 0:
+        elif price_change > 0:    # Bullish (0-10%)
             return 'bullish'
-        elif price_change > -10:
+        elif price_change > -10:  # Cope (-10-0%)
             return 'cope'
-        else:
-            return 'despair'
+        elif price_change > -50:  # Major cope (-50--10%)
+            return 'major_cope'
+        else:                     # Extreme despair (<-50%)
+            return 'extreme_despair'
             
     def generate_response(self, price_change):
         """Generate response based on price movement"""
@@ -107,13 +117,19 @@ class MemeBot:
         base_character = """A sleek, genderless robotic trading entity with a metallic chrome finish, digital display screen for a face showing expressions, multiple mechanical arms with exposed circuitry, sitting at a futuristic trading station. The robot has a clear transparent chest cavity showing pulsing circuits and energy cores."""
         
         mood_prompts = {
-            'moon': f"{base_character} The scene is DOMINATED by intense neon green lighting and multiple holographic displays showing MASSIVE upward price charts with giant green arrows pointing up. The robot's face display shows pure ecstasy, arms raised in triumph, digital eyes glowing bright green. Energy cores in chest pulsing bright green. Trading desk surrounded by floating holographic green candles and upward trending charts. Background filled with raining digital green numbers.",
+            'extreme_moon': f"{base_character} PURE EUPHORIA! The robot is literally floating above its chair with pure joy, mechanical arms spread wide in victory, shooting sparks of excitement! Face display showing tears of joy and pure ecstasy! The entire scene is EXPLODING with intense bright green energy, with massive upward-shooting green fireworks! Every screen shows parabolic green charts going vertical! Energy cores in chest cavity OVERLOADING with bright green power! Golden coins and green holographic numbers raining everywhere! The background is a pure paradise of green auroras and celebration!",
             
-            'bullish': f"{base_character} The environment is bathed in bright green light, multiple screens showing clear upward trending charts with prominent green arrows. The robot's face display shows a confident expression, mechanical arms moving energetically across keyboards. Energy cores glowing steady green. Holographic displays all around showing positive green indicators and rising trends.",
+            'major_moon': f"{base_character} The scene is dominated by brilliant green success lighting! The robot is standing triumphantly on the desk, arms raised in victory! Face display showing pure joy! Multiple screens showing steep upward trends with celebration effects! Energy cores pulsing strong bright green! Trading environment filled with floating success indicators and victory symbols!",
             
-            'cope': f"{base_character} The scene is tinted with anxious amber warning lights, screens showing wavering charts with small red dips. The robot's face display shows nervous static, one arm clutching its head dramatically. Energy cores flickering between yellow and red. Multiple warning indicators and red exclamation marks floating in the background. Scattered emergency lights casting nervous shadows.",
+            'moon': f"{base_character} The environment is bathed in bright green light, screens showing clear upward trends. The robot's face display shows a very happy expression, arms moving excitedly. Energy cores glowing steady green. Holographic displays showing positive indicators.",
             
-            'despair': f"{base_character} The entire scene is FLOODED with harsh emergency red lighting and alarms. All screens showing CATASTROPHIC downward crashes with huge red arrows pointing down. The robot's face display shows pure agony, multiple arms clutching its head in despair. Energy cores pulsing dangerous red. Trading desk covered in error messages and crash indicators. Background filled with falling digital red numbers and downward trending charts."
+            'bullish': f"{base_character} Mild green ambient lighting, screens showing modest upward movements. The robot looks content and focused, working efficiently. Energy cores pulsing calm green. Subtle positive indicators in the background.",
+            
+            'cope': f"{base_character} Slight amber warning tints, screens showing minor dips. The robot appears mildly anxious but trying to maintain composure. Energy cores flickering between green and yellow. Some caution indicators visible.",
+            
+            'major_cope': f"{base_character} Heavy red emergency lighting! The robot is frantically working multiple keyboards with obvious panic! Face display showing extreme stress! Screens filled with warning indicators and falling charts! Energy cores pulsing dangerous red! Emergency alerts flashing everywhere!",
+            
+            'extreme_despair': f"{base_character} TOTAL MELTDOWN! The robot has collapsed dramatically across the desk, all arms clutching its head in absolute despair! Face display glitching with pure agony! The entire scene is DROWNING in blood-red emergency lighting and blaring alarms! All screens showing catastrophic crash patterns! Energy cores critically overloading with unstable red energy! Error messages and crash indicators EVERYWHERE! The background is a nightmare of falling numbers and emergency signals! Sparks and smoke coming from the robot's circuits!"
         }
         return mood_prompts[mood]
 
@@ -194,6 +210,60 @@ class MemeBot:
         except Exception as e:
             print(f"Error: {e}")
 
+    def test_mode(self, test_price_change=None):
+        """Test mode to simulate different price movements"""
+        try:
+            if test_price_change is None:
+                # Test key percentage scenarios
+                test_changes = [
+                    (100, "EXTREME MOON (100% up)"),
+                    (50, "MAJOR MOON (50% up)"),
+                    (10, "MOON (10% up)"),
+                    (5, "Bullish (5% up)"),
+                    (-5, "Cope (-5% down)"),
+                    (-50, "MAJOR COPE (-50% down)"),
+                    (-100, "EXTREME DESPAIR (-100% down)")
+                ]
+                
+                for change, description in test_changes:
+                    print(f"\n\n=== Testing {description} ===")
+                    mood = self.get_personality_mode(change)
+                    response = self.generate_response(change)
+                    image_url = self.generate_image(mood)
+                    
+                    print(f"Mood: {mood}")
+                    print(f"Tweet: {response}")
+                    print(f"Image URL: {image_url}")
+                    print("=" * 50)
+            else:
+                # Test specific price change
+                print(f"\n=== Testing {test_price_change}% price change ===")
+                mood = self.get_personality_mode(test_price_change)
+                response = self.generate_response(test_price_change)
+                image_url = self.generate_image(mood)
+                
+                print(f"Mood: {mood}")
+                print(f"Tweet: {response}")
+                print(f"Image URL: {image_url}")
+                print("=" * 50)
+                
+        except Exception as e:
+            print(f"Error in test mode: {e}")
+
 if __name__ == "__main__":
+    import sys
     bot = MemeBot()
-    bot.run_once() 
+    
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "test":
+            # Run test mode with all scenarios
+            bot.test_mode()
+        elif sys.argv[1].replace('.', '').replace('-', '').isdigit():
+            # Test specific price change
+            test_change = float(sys.argv[1])
+            bot.test_mode(test_change)
+        else:
+            print("Invalid argument. Use 'test' or provide a price change percentage.")
+    else:
+        # Normal bot operation
+        bot.run_once() 
