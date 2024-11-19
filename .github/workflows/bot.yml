@@ -1,8 +1,8 @@
 name: Run Twitter Bot
 on:
   schedule:
-    - cron: '0 */2 * * *'  # Every 2 hours to be safe with rate limits
-  workflow_dispatch:  # Manual trigger for testing
+    - cron: '0 */2 * * *'  # Every 2 hours
+  workflow_dispatch:
 
 jobs:
   run-bot:
@@ -13,7 +13,10 @@ jobs:
         with:
           python-version: '3.x'
       - name: Install dependencies
-        run: pip install openai tweepy python-dotenv requests
+        run: |
+          python -m pip install --upgrade pip
+          pip install openai tweepy python-dotenv requests
+          echo "Dependencies installed successfully"
       - name: Run bot
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -21,4 +24,7 @@ jobs:
           TWITTER_API_SECRET: ${{ secrets.TWITTER_API_SECRET }}
           TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
           TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
-        run: python bot.py 
+        run: |
+          echo "Starting bot run..."
+          python bot.py
+          echo "Bot run completed"

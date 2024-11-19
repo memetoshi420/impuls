@@ -157,58 +157,85 @@ class MemeBot:
         """Post tweet with image"""
         try:
             # Download image
+            print("Downloading image...")
             image_response = requests.get(image_url)
             if image_response.status_code != 200:
-                raise Exception("Failed to download image")
+                raise Exception(f"Failed to download image. Status code: {image_response.status_code}")
 
             # Save image temporarily
+            print("Saving temporary image...")
             temp_image = "temp_mood.png"
             with open(temp_image, "wb") as f:
                 f.write(image_response.content)
 
             # Upload media to Twitter
-            media = self.twitter_api.media_upload(filename=temp_image)
+            print("Uploading media to Twitter...")
+            try:
+                media = self.twitter_api.media_upload(filename=temp_image)
+                print(f"Media uploaded successfully. Media ID: {media.media_id}")
+            except Exception as e:
+                raise Exception(f"Failed to upload media: {str(e)}")
             
             # Post tweet with media
-            self.twitter_client.create_tweet(
-                text=tweet_text,
-                media_ids=[media.media_id]
-            )
+            print("Posting tweet...")
+            try:
+                tweet = self.twitter_client.create_tweet(
+                    text=tweet_text,
+                    media_ids=[media.media_id]
+                )
+                print(f"Tweet posted successfully! Tweet ID: {tweet.data['id']}")
+            except Exception as e:
+                raise Exception(f"Failed to post tweet: {str(e)}")
             
             # Clean up temp file
             os.remove(temp_image)
-            
-            print("Tweet posted successfully with image!")
             return True
             
         except Exception as e:
-            print(f"Error posting tweet: {e}")
+            print(f"ERROR in post_tweet: {str(e)}")
+            print("Full error details:")
+            import traceback
+            print(traceback.format_exc())
             return False
 
     def run_once(self):
         """Single price check and response"""
         try:
+            print("\n=== Starting Bot Run ===")
             current_price = self.get_price()
+            print(f"Current price fetched: ${current_price:.6f}")
             
             if self.price_history:
                 last_price = self.price_history[-1][0]
                 price_change = ((current_price - last_price) / last_price) * 100
             else:
                 price_change = 1.0
+            print(f"Calculated price change: {price_change:.2f}%")
                 
-            print(f"\nCurrent price: ${current_price:.6f}")
             mood = self.get_personality_mode(price_change)
+            print(f"Current mood: {mood}")
+            
             response = self.generate_response(price_change)
+            print(f"Generated tweet text: {response}")
+            
+            print("Generating DALL-E image...")
             image_url = self.generate_image(mood)
+            print(f"Image URL generated: {image_url}")
             
-            print(f"\nMode: {mood}")
-            print(f"Response: {response}")
-            print(f"Image URL: {image_url}")
+            print("Attempting to post tweet...")
+            success = self.post_tweet(response, image_url)
             
-            self.post_tweet(response, image_url)
+            if success:
+                print("Tweet posted successfully!")
+                self.price_history.append((current_price, datetime.now()))
+            else:
+                print("Failed to post tweet!")
                 
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"ERROR in run_once: {str(e)}")
+            print("Full error details:")
+            import traceback
+            print(traceback.format_exc())
 
     def test_mode(self, test_price_change=None):
         """Test mode to simulate different price movements"""
