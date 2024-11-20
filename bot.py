@@ -356,28 +356,24 @@ class MemeBot:
                 print(f"Phase 1 error: {e}")
                 await asyncio.sleep(60)
 
-    async def run_phase2(self):
-        """Run Phase 2 (DexScreener tracking)"""
-        print("Starting Phase 2 (DexScreener tracking)...")
+    async def run_phase2_once(self):
+        """Run Phase 2 (DexScreener) once"""
+        print("Running single Phase 2 check...")
         self.current_tracker = self.phase2_tracker
-        self.token = self.phase2_token  # Switch to Phase 2 token
+        self.token = self.phase2_token
         
-        while True:
-            try:
-                price, change = await self.current_tracker.get_price()
+        try:
+            price, change = await self.current_tracker.get_price()
+            
+            if price is not None:
+                print(f"\n=== Current Price: ${price:.6f} ===")
+                print(f"=== Price Change: {change:.2f}% ===\n")
                 
-                if price is not None:
-                    print(f"\n=== Current Price: ${price:.6f} ===")
-                    print(f"=== Price Change: {change:.2f}% ===\n")
-                    
-                    # Generate and post tweet based on price change
-                    await self.handle_price_update(price, change, test_mode=True)
-                    
-                await asyncio.sleep(self.current_tracker.check_interval)
+                # Generate and post tweet
+                await self.handle_price_update(price, change)
                 
-            except Exception as e:
-                print(f"Phase 2 error: {e}")
-                await asyncio.sleep(60)
+        except Exception as e:
+            print(f"Phase 2 error: {e}")
 
     async def run(self):
         """Main bot run method"""
@@ -385,7 +381,7 @@ class MemeBot:
             # Start with Phase 1
             if await self.run_phase1():
                 # If Phase 1 completes (reaches 420 SOL), switch to Phase 2
-                await self.run_phase2()
+                await self.run_phase2_once()
                 
         except Exception as e:
             print(f"Bot run error: {e}")
@@ -474,12 +470,12 @@ if __name__ == "__main__":
             asyncio.run(bot.run_phase1())
         elif sys.argv[1] == "test2":
             print("Testing Phase 2 (DexScreener)...")
-            asyncio.run(bot.run_phase2())
+            asyncio.run(bot.run_phase2_once())
         elif sys.argv[1] == "test":
             bot.test_mode()
         elif sys.argv[1] == "images":
             bot.test_images()
-        elif sys.argv[1] == "mood":  # New option
+        elif sys.argv[1] == "mood":
             if len(sys.argv) > 2:
                 bot.test_single_mood(sys.argv[2])
             else:

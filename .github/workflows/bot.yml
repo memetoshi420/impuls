@@ -2,7 +2,7 @@ name: Run Twitter Bot
 on:
   schedule:
     - cron: '0 */3 * * *'  # Every 3 hours
-  workflow_dispatch:  # Manual trigger option
+  workflow_dispatch:
 
 jobs:
   run-bot:
@@ -26,5 +26,5 @@ jobs:
           TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
         run: |
           echo "Starting bot run..."
-          python bot.py test2  # Run in Phase 2 mode
+          python bot.py test  # Just run a single check
           echo "Bot run completed"
