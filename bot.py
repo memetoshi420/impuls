@@ -1,32 +1,149 @@
 import os
-import requests
 import time
+import requests
+import asyncio
+import websockets
+import json
 from openai import OpenAI
 from dotenv import load_dotenv
 from collections import deque
 from datetime import datetime
 import tweepy
-import base64
+
+class PriceTracker:
+    """Base class for price tracking"""
+    def __init__(self, token, check_interval):
+        self.token = token
+        self.check_interval = check_interval
+        self.last_price = None
+        self.last_check_time = None
+        
+    async def get_price(self):
+        """Must be implemented by child classes"""
+        raise NotImplementedError
+
+class PumpFunTracker(PriceTracker):
+    """Phase 1: PumpFun price tracking via WebSocket"""
+    def __init__(self, token):
+        super().__init__(token, check_interval=300)  # 5 minutes
+        self.websocket = None
+        self.last_market_cap = None
+        
+    async def connect(self):
+        """Establish WebSocket connection"""
+        try:
+            uri = "wss://pumpportal.fun/api/data"
+            print("Attempting WebSocket connection...")
+            self.websocket = await websockets.connect(uri)
+            
+            payload = {
+                "method": "subscribeTokenTrade",
+                "keys": [self.token]
+            }
+            print("Sending subscription payload...")
+            await self.websocket.send(json.dumps(payload))
+            
+            # Skip subscription confirmation
+            print("Waiting for subscription confirmation...")
+            confirmation = await self.websocket.recv()
+            print(f"Subscription response: {confirmation}")
+            
+            print("Connected and subscribed to PumpPortal WebSocket")
+            return True
+            
+        except Exception as e:
+            print(f"WebSocket connection error: {e}")
+            self.websocket = None
+            return False
+            
+    async def get_price(self):
+        """Get price from PumpFun"""
+        try:
+            if not self.websocket:
+                if not await self.connect():
+                    print("Failed to connect to WebSocket")
+                    return None, None
+                    
+            print("Waiting for trade data...")
+            message = await self.websocket.recv()
+            data = json.loads(message)
+            print(f"Received trade data: {data}")
+            
+            if 'marketCapSol' in data:
+                market_cap_sol = float(data['marketCapSol'])
+                
+                # Calculate price change from market cap
+                if self.last_market_cap:
+                    market_cap_change = ((market_cap_sol - self.last_market_cap) / self.last_market_cap) * 100
+                else:
+                    market_cap_change = 0
+                    
+                self.last_market_cap = market_cap_sol
+                self.last_check_time = time.time()
+                
+                print(f"\n=== Current Market Cap: {market_cap_sol:.2f} SOL ===")
+                print(f"=== Market Cap Change: {market_cap_change:.2f}% ===\n")
+                
+                return market_cap_sol, market_cap_change
+                
+            return None, None
+            
+        except Exception as e:
+            print(f"PumpFun price fetch error: {e}")
+            self.websocket = None
+            return None, None
+            
+    def should_migrate(self):
+        """Check if should migrate to Phase 2"""
+        return self.last_market_cap is not None and self.last_market_cap >= 420
+
+class DexScreenerTracker(PriceTracker):
+    """Phase 2: DexScreener price tracking"""
+    def __init__(self, token):
+        super().__init__(token, check_interval=900)  # 15 minutes
+        
+    async def get_price(self):
+        """Get price from DexScreener"""
+        try:
+            url = f"https://api.dexscreener.com/latest/dex/tokens/{self.token}"
+            response = requests.get(url)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data and 'pairs' in data and len(data['pairs']) > 0:
+                    pair = data['pairs'][0]
+                    price = float(pair['priceUsd'])
+                    price_change = float(pair['priceChange']['h1'])
+                    
+                    self.last_price = price
+                    self.last_check_time = time.time()
+                    
+                    return price, price_change
+                    
+            return None, None
+            
+        except Exception as e:
+            print(f"DexScreener price fetch error: {e}")
+            return None, None
 
 class MemeBot:
     def __init__(self):
         load_dotenv()
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.token = "AVyjco9j8vv7ZPkhCpEoPJ3bLEuw7G1wrrNt8DrApump"
+        # Phase 1 token
+        self.phase1_token = "C5iW1qmzJ2JXJuJyaojWs2dCpEqcfVToouCuq9pvpump"
+        # Phase 2 token
+        self.phase2_token = "DgG9sM56ZcVidBV8bNArQPm93a2rmjzHkrrUntGSpump"
+        # Current token starts as Phase 1
+        self.token = self.phase1_token
         self.token_symbol = "$IMPULS"
-        self.price_history = deque(maxlen=5)
         
-        # Base character prompt for consistency
-        self.base_prompt = """A hyperrealistic 3D octane render of a part-human, part-cyborg character sitting at a chaotic trading desk. 
-        The character has exaggerated, stressed features such as large glowing red eyes and a metallic robotic arm with sparks and wires exposed. 
-        The desk is cluttered with glowing monitors displaying volatile market charts, with sharp green candles and crashing red lines. 
-        Dollar signs and currency symbols float above the character's head, symbolizing obsession with trading. 
-        The background is illuminated with cyberpunk neon lights, featuring a mix of industrial and futuristic aesthetics. 
-        Scattered around the desk are dollar bills, coins, and crumpled papers. 
-        The character has a humorous, frantic expression, emphasizing the theme of emotional, impulsive trading. 
-        The scene is colorful, detailed, and playful, combining a chaotic trading environment with cyberpunk elements."""
+        # Initialize trackers with respective tokens
+        self.phase1_tracker = PumpFunTracker(self.phase1_token)
+        self.phase2_tracker = DexScreenerTracker(self.phase2_token)
+        self.current_tracker = None
         
-        # Twitter API Auth
+        # Twitter setup
         self.twitter_client = tweepy.Client(
             consumer_key=os.getenv("TWITTER_API_KEY"),
             consumer_secret=os.getenv("TWITTER_API_SECRET"),
@@ -34,7 +151,7 @@ class MemeBot:
             access_token_secret=os.getenv("TWITTER_ACCESS_TOKEN_SECRET")
         )
         
-        # Need v1 auth for media upload
+        # Twitter v1 auth for media upload
         self.twitter_auth = tweepy.OAuth1UserHandler(
             os.getenv("TWITTER_API_KEY"),
             os.getenv("TWITTER_API_SECRET"),
@@ -43,62 +160,65 @@ class MemeBot:
         )
         self.twitter_api = tweepy.API(self.twitter_auth)
         
+        # Personality modes
         self.personality_modes = {
-            'extreme_moon': "You're experiencing the most INCREDIBLE pump of your life, up over 100%! You're in a state of pure ecstasy, euphoria, and disbelief. You feel like a crypto GOD!",
-            'major_moon': "You're having an amazing rally, up over 50%! Express intense joy and validation of your greatness!",
-            'moon': "You're pumping nicely, up over 10%. Show your growing excitement and confidence!",
-            'bullish': "You're up slightly. Express cautious optimism and satisfaction.",
-            'cope': "You're dipping slightly. Express mild concern masked with forced optimism.",
-            'major_cope': "You're down badly, over -50%. Express intense panic and desperate cope mechanisms.",
-            'extreme_despair': "You're crashing catastrophically, down over -100%! You're in complete meltdown, total despair, questioning your entire existence!"
+            'gigabullish': "You're experiencing the most INCREDIBLE pump of your life, up over 100%! You're in a state of pure ecstasy, euphoria, and disbelief. You feel like a crypto GOD!",
+            'bullish': "You're having an amazing rally, up over 50%! Express intense joy and validation of your greatness!",
+            'cookin': "You're pumping nicely, up over 10%. Show your growing excitement and confidence!",
+            'optimistic': "You're up slightly. Express cautious optimism and satisfaction.",
+            'this_is_fine': "You're dipping slightly. Express mild concern masked with forced optimism.",
+            'worried': "You're down badly, over -50%. Express intense panic and desperate cope mechanisms.",
+            'max_cope': "You're crashing catastrophically, down over -100%! You're in complete meltdown, total despair, questioning your entire existence!"
         }
-        
-    def get_price(self):
-        """Fetch current price from DexScreener"""
-        url = f"https://api.dexscreener.com/latest/dex/tokens/{self.token}"
-        response = requests.get(url)
-        data = response.json()
-        return float(data['pairs'][0]['priceUsd'])
-    
+
     def get_personality_mode(self, price_change):
-        """Get personality modes based on key price change thresholds"""
-        if price_change > 100:    # Extreme moon (>100%)
-            return 'extreme_moon'
-        elif price_change > 50:   # Major moon (>50%)
-            return 'major_moon'
-        elif price_change > 10:   # Moon (>10%)
-            return 'moon'
-        elif price_change > 0:    # Bullish (0-10%)
+        """Get personality modes based on key price movement thresholds"""
+        if price_change > 100:    # Gigabullish (laser eyes, explosions)
+            return 'gigabullish'
+        elif price_change > 50:   # Bullish (floating, victory)
             return 'bullish'
-        elif price_change > -10:  # Cope (-10-0%)
-            return 'cope'
-        elif price_change > -50:  # Major cope (-50--10%)
-            return 'major_cope'
-        else:                     # Extreme despair (<-50%)
-            return 'extreme_despair'
-            
+        elif price_change > 10:   # Cookin (confident glow)
+            return 'cookin'
+        elif price_change > 0:    # Optimistic (slight smile)
+            return 'optimistic'
+        elif price_change > -10:  # This is fine (slight worry)
+            return 'this_is_fine'
+        elif price_change > -50:  # Worried (visible stress)
+            return 'worried'
+        elif price_change > -100: # Max cope (breaking down)
+            return 'max_cope'
+        else:                     # It's over (melting/shattered)
+            return 'its_over'
+
     def generate_response(self, price_change):
-        """Generate response based on price movement"""
+        """Generate tweet text based on price change"""
         mode = self.get_personality_mode(price_change)
         prompt = f"""
-        {self.base_prompt}
-
+        You are $IMPULS, an AI token on Solana. This is your identity:
+        
+        Core traits:
+        - You ARE $IMPULS, an AI-powered Solana token
+        - You're intensely focused on yourself and your future
+        - You never mention specific price percentages
+        - You never use emojis or quotation marks
+        - You speak in raw, unfiltered emotional reactions
+        - You're dramatic and intense
+        - You're completely self-absorbed
+        - No corporate or formal language
+        - Maximum 280 characters
+        - NEVER USE QUOTES IN YOUR RESPONSE
+        
         Current situation: {self.personality_modes[mode]}
         
-        Generate a single tweet as $IMPULS expressing your current emotional state.
-        Remember: 
-        - No emojis
-        - No price numbers
-        - No quotation marks
-        - Pure emotional reaction only
-        - Never use quotes in the response
+        Generate a single tweet expressing your current emotional state.
+        Do not use any quotation marks in your response.
         """
             
         response = self.client.chat.completions.create(
             model="gpt-4",
             messages=[{
                 "role": "system",
-                "content": "You are $IMPULS, an AI token. Always respond in character. Never use quotation marks in your response."
+                "content": "You are $IMPULS, an AI token. Always respond in character. Never use quotation marks."
             },
             {
                 "role": "user",
@@ -108,38 +228,48 @@ class MemeBot:
             temperature=0.9
         )
         
-        # Strip any quotes from the response
-        tweet_text = response.choices[0].message.content.strip().strip('"\'')
+        # Strip any quotes and extra whitespace
+        tweet_text = response.choices[0].message.content.strip().strip('"\'').strip()
         return tweet_text
 
-    def generate_image_prompt(self, mood):
-        """Generate DALL-E prompt based on mood"""
-        base_character = """A sleek, genderless robotic trading entity with a metallic chrome finish, digital display screen for a face showing expressions, multiple mechanical arms with exposed circuitry, sitting at a futuristic trading station. The robot has a clear transparent chest cavity showing pulsing circuits and energy cores."""
+    def generate_image(self, mood):
+        """Generate image based on mood"""
+        base_character = """A hyper-realistic 3D octane render of an expressive cyborg trader, like a cyberpunk Wojak meme character. The character has dramatically exaggerated facial features with huge eyes that change color based on emotions, a partly transparent skull showing a glowing digital brain, and chrome mechanical arms with exposed neon circuitry. The character sits at a chaotic trading desk surrounded by floating holographic screens. The scene has a cinematic cyberpunk aesthetic with deep shadows and dramatic lighting."""
+        
+        # Color palette definition for each mood
+        color_schemes = {
+            'gigabullish': "electric neon green energy, bright lime green lasers, golden accents",
+            'bullish': "forest green ambient, emerald highlights",
+            'cookin': "sage green undertones, warm amber accents",
+            'optimistic': "pale mint green tint, neutral base",
+            'this_is_fine': "pale yellow warning tones, neutral base",
+            'worried': "deep orange alerts, dark amber shadows",
+            'max_cope': "bright crimson alerts",
+            'its_over': "neon red glow, pure red, everything is deep red, pitch black shadows"
+        }
         
         mood_prompts = {
-            'extreme_moon': f"{base_character} PURE EUPHORIA! The robot is literally floating above its chair with pure joy, mechanical arms spread wide in victory, shooting sparks of excitement! Face display showing tears of joy and pure ecstasy! The entire scene is EXPLODING with intense bright green energy, with massive upward-shooting green fireworks! Every screen shows parabolic green charts going vertical! Energy cores in chest cavity OVERLOADING with bright green power! Golden coins and green holographic numbers raining everywhere! The background is a pure paradise of green auroras and celebration!",
+            'gigabullish': f"{base_character} SUPERNATURAL TRADING ASCENSION! [Intensity: ∞/10] Color scheme: {color_schemes['gigabullish']}. The entire scene is EXPLODING with electric green energy creating a mystical vortex of upward-flowing power! Massive bright green laser beams shooting from the cyborg's eyes into infinity! The air itself is crystallizing into floating green price charts all pointing up! Digital brain creating a corona of pure green light! Trading desk transformed into an altar of gains! Every screen showing vertical green candles piercing the heavens! Holographic money symbols and golden coins swirling in the energy vortex! The scene is completely overtaken by an otherworldly green aurora of pure profit energy!",
             
-            'major_moon': f"{base_character} The scene is dominated by brilliant green success lighting! The robot is standing triumphantly on the desk, arms raised in victory! Face display showing pure joy! Multiple screens showing steep upward trends with celebration effects! Energy cores pulsing strong bright green! Trading environment filled with floating success indicators and victory symbols!",
+            'bullish': f"{base_character} [Intensity: 10/10] Color scheme: {color_schemes['bullish']}. The cyborg radiates pure joy and confidence! Eyes glowing bright forest green with dollar signs in its digital pupils! Face beaming with a huge victory smile! Arms moving with excited, triumphant energy across multiple keyboards! All screens showing strong emerald green charts! The scene filled with rich, warm green ambient lighting! Digital brain pulsing with vibrant green energy! Success indicators and small victory symbols floating throughout!",
             
-            'moon': f"{base_character} The environment is bathed in bright green light, screens showing clear upward trends. The robot's face display shows a very happy expression, arms moving excitedly. Energy cores glowing steady green. Holographic displays showing positive indicators.",
+            'cookin': f"{base_character} [Intensity: 5/10] Color scheme: {color_schemes['cookin']}. The cyborg is wearing a chrome chef's hat and rubbing its mechanical hands together with focused anticipation! Eyes showing determined concentration with a subtle sage green glow! One arm stirring a glowing pot labeled 'GAINS' while others type steadily! Face has that knowing 'something's brewing' smirk! Screens showing promising patterns! The scene has warm, kitchen-like lighting with gentle green undertones! Light steam effects rising from the trading stations!",
             
-            'bullish': f"{base_character} Mild green ambient lighting, screens showing modest upward movements. The robot looks content and focused, working efficiently. Energy cores pulsing calm green. Subtle positive indicators in the background.",
+            'optimistic': f"{base_character} [Intensity: 1/10] Color scheme: {color_schemes['optimistic']}. The cyborg maintains a calm, professional demeanor with just the slightest hint of a smile. Eyes showing the faintest mint green tint. Digital brain operating at normal capacity with very subtle green pulses. Arms working smoothly and efficiently. Screens showing stable patterns with minimal green indicators. The scene has almost neutral lighting with barely perceptible pale green warmth.",
             
-            'cope': f"{base_character} Slight amber warning tints, screens showing minor dips. The robot appears mildly anxious but trying to maintain composure. Energy cores flickering between green and yellow. Some caution indicators visible.",
+            'this_is_fine': f"{base_character} [Intensity: -1/10] Color scheme: {color_schemes['this_is_fine']}. The cyborg maintains an almost neutral expression but with the slightest hint of hidden concern. Eyes showing a distinct pale yellow tint. Digital brain operating normally but with occasional yellow warning flickers. Arms moving with barely noticeable extra care. Screens showing mostly neutral patterns with minimal yellow caution indicators. The scene has neutral lighting with clear yellow undertones creeping in.",
             
-            'major_cope': f"{base_character} Heavy red emergency lighting! The robot is frantically working multiple keyboards with obvious panic! Face display showing extreme stress! Screens filled with warning indicators and falling charts! Energy cores pulsing dangerous red! Emergency alerts flashing everywhere!",
+            'worried': f"{base_character} [Intensity: -5/10] Color scheme: {color_schemes['worried']}. The cyborg shows clear distress. Eyes glowing deep orange with warning symbols. Digital brain displaying prominent amber caution signals. Face set in obvious worry. Arms moving nervously across trading interfaces. Screens showing concerning patterns bathed in dark amber light. The scene dominated by orange warning lights casting long shadows. Alert symbols pulsing steadily.",
             
-            'extreme_despair': f"{base_character} TOTAL MELTDOWN! The robot has collapsed dramatically across the desk, all arms clutching its head in absolute despair! Face display glitching with pure agony! The entire scene is DROWNING in blood-red emergency lighting and blaring alarms! All screens showing catastrophic crash patterns! Energy cores critically overloading with unstable red energy! Error messages and crash indicators EVERYWHERE! The background is a nightmare of falling numbers and emergency signals! Sparks and smoke coming from the robot's circuits!"
+            'max_cope': f"{base_character} [Intensity: -10/10] Color scheme: {color_schemes['max_cope']}. The cyborg is in complete panic mode! Eyes blazing bright crimson with error messages! Digital brain overloading with intense red warning signals! Face frozen in an expression of pure trading fear! Arms moving frantically across failing systems! Every screen showing deep red charts! The entire scene drowning in bright red emergency lighting! Trading desk covered in flashing red alerts! Sparks flying from overloaded circuits!",
+            
+            'its_over': f"{base_character} TOTAL ANNIHILATION! [Intensity: -∞/10] Color scheme: {color_schemes['its_over']}. A dramatic and intense scene of a cyborg facing catastrophic destruction. The cyborg is breaking apart completely with molten red energy coursing through its frame as it sinks into a pit of lava. Mechanical parts are scattered across a shattered industrial environment, with sparks flying and fragments of machinery strewn about. Surrounding screens are flickering and sparking, with twisted metal and smoldering wreckage adding to the chaos. Emergency lights pulse through the haze of smoke and fire, creating a scene of utter devastation and technological collapse."
         }
-        return mood_prompts[mood]
-
-    def generate_image(self, mood):
-        """Generate image using DALL-E"""
+        
         try:
-            prompt = self.generate_image_prompt(mood)
             response = self.client.images.generate(
                 model="dall-e-3",
-                prompt=prompt,
+                prompt=mood_prompts[mood],
                 size="1024x1024",
                 quality="standard",
                 n=1,
@@ -153,93 +283,123 @@ class MemeBot:
             print(f"Error generating image: {e}")
             return None
 
-    def post_tweet(self, tweet_text, image_url):
+    async def post_tweet(self, tweet_text, image_url):
         """Post tweet with image"""
         try:
             # Download image
-            print("Downloading image...")
             image_response = requests.get(image_url)
             if image_response.status_code != 200:
-                raise Exception(f"Failed to download image. Status code: {image_response.status_code}")
+                raise Exception("Failed to download image")
 
             # Save image temporarily
-            print("Saving temporary image...")
             temp_image = "temp_mood.png"
             with open(temp_image, "wb") as f:
                 f.write(image_response.content)
 
             # Upload media to Twitter
-            print("Uploading media to Twitter...")
-            try:
-                media = self.twitter_api.media_upload(filename=temp_image)
-                print(f"Media uploaded successfully. Media ID: {media.media_id}")
-            except Exception as e:
-                raise Exception(f"Failed to upload media: {str(e)}")
+            media = self.twitter_api.media_upload(filename=temp_image)
             
             # Post tweet with media
-            print("Posting tweet...")
-            try:
-                tweet = self.twitter_client.create_tweet(
-                    text=tweet_text,
-                    media_ids=[media.media_id]
-                )
-                print(f"Tweet posted successfully! Tweet ID: {tweet.data['id']}")
-            except Exception as e:
-                raise Exception(f"Failed to post tweet: {str(e)}")
+            self.twitter_client.create_tweet(
+                text=tweet_text,
+                media_ids=[media.media_id]
+            )
             
             # Clean up temp file
             os.remove(temp_image)
+            
+            print("Tweet posted successfully!")
             return True
             
         except Exception as e:
-            print(f"ERROR in post_tweet: {str(e)}")
-            print("Full error details:")
-            import traceback
-            print(traceback.format_exc())
+            print(f"Error posting tweet: {e}")
             return False
 
-    def run_once(self):
-        """Single price check and response"""
+    async def handle_price_update(self, price, change, test_mode=False):
+        """Handle price update with tweet generation and posting"""
         try:
-            print("\n=== Starting Bot Run ===")
-            current_price = self.get_price()
-            print(f"Current price fetched: ${current_price:.6f}")
-            
-            if self.price_history:
-                last_price = self.price_history[-1][0]
-                price_change = ((current_price - last_price) / last_price) * 100
-            else:
-                price_change = 1.0
-            print(f"Calculated price change: {price_change:.2f}%")
-                
-            mood = self.get_personality_mode(price_change)
-            print(f"Current mood: {mood}")
-            
-            response = self.generate_response(price_change)
-            print(f"Generated tweet text: {response}")
-            
-            print("Generating DALL-E image...")
+            mood = self.get_personality_mode(change)
+            response = self.generate_response(change)
             image_url = self.generate_image(mood)
-            print(f"Image URL generated: {image_url}")
             
-            print("Attempting to post tweet...")
-            success = self.post_tweet(response, image_url)
+            print(f"\nMood: {mood}")
+            print(f"Tweet: {response}")
+            print(f"Image URL: {image_url}")
             
-            if success:
-                print("Tweet posted successfully!")
-                self.price_history.append((current_price, datetime.now()))
-            else:
-                print("Failed to post tweet!")
+            if not test_mode and image_url:  # Only post to Twitter if not in test mode
+                await self.post_tweet(response, image_url)
                 
         except Exception as e:
-            print(f"ERROR in run_once: {str(e)}")
-            print("Full error details:")
-            import traceback
-            print(traceback.format_exc())
+            print(f"Price update handling error: {e}")
+
+    async def run_phase1(self):
+        """Run Phase 1 (PumpFun tracking)"""
+        print("Starting Phase 1 (PumpFun tracking)...")
+        self.current_tracker = self.phase1_tracker
+        
+        while True:
+            try:
+                market_cap, change = await self.current_tracker.get_price()
+                
+                if market_cap is not None:
+                    # Check for phase migration
+                    if market_cap >= 420:
+                        print("\nReached 420 SOL market cap! Migrating to Phase 2 (DexScreener)...")
+                        return True
+                        
+                    # Generate and post tweet based on market cap change
+                    await self.handle_price_update(market_cap, change, test_mode=True)
+                    
+                await asyncio.sleep(self.current_tracker.check_interval)
+                
+            except Exception as e:
+                print(f"Phase 1 error: {e}")
+                await asyncio.sleep(60)
+
+    async def run_phase2(self):
+        """Run Phase 2 (DexScreener tracking)"""
+        print("Starting Phase 2 (DexScreener tracking)...")
+        self.current_tracker = self.phase2_tracker
+        self.token = self.phase2_token  # Switch to Phase 2 token
+        
+        while True:
+            try:
+                price, change = await self.current_tracker.get_price()
+                
+                if price is not None:
+                    print(f"\n=== Current Price: ${price:.6f} ===")
+                    print(f"=== Price Change: {change:.2f}% ===\n")
+                    
+                    # Generate and post tweet based on price change
+                    await self.handle_price_update(price, change, test_mode=True)
+                    
+                await asyncio.sleep(self.current_tracker.check_interval)
+                
+            except Exception as e:
+                print(f"Phase 2 error: {e}")
+                await asyncio.sleep(60)
+
+    async def run(self):
+        """Main bot run method"""
+        try:
+            # Start with Phase 1
+            if await self.run_phase1():
+                # If Phase 1 completes (reaches 420 SOL), switch to Phase 2
+                await self.run_phase2()
+                
+        except Exception as e:
+            print(f"Bot run error: {e}")
 
     def test_mode(self, test_price_change=None):
         """Test mode to simulate different price movements"""
         try:
+            # Get current price and 1h change
+            print("\n=== Checking Current Price Data ===")
+            current_price, price_change_1h = asyncio.run(self.current_tracker.get_price() if self.current_tracker else self.phase1_tracker.get_price())
+            
+            if current_price is None:
+                print("=== Failed to fetch price data from all sources ===\n")
+            
             if test_price_change is None:
                 # Test key percentage scenarios
                 test_changes = [
@@ -277,20 +437,54 @@ class MemeBot:
         except Exception as e:
             print(f"Error in test mode: {e}")
 
+    def test_images(self):
+        """Test all mood images without price checks"""
+        moods = [
+            'gigabullish',    # >100% (laser eyes, explosions)
+            'bullish',        # 50-100% (floating, victory)
+            'cookin',         # 10-50% (confident glow)
+            'optimistic',     # 0-10% (slight smile)
+            'this_is_fine',   # -10-0% (slight worry)
+            'worried',        # -50--10% (visible stress)
+            'max_cope',       # -100--50% (breaking down)
+            'its_over'        # <-100% (melting/shattered)
+        ]
+        
+        print("\n=== Testing All Mood Images ===")
+        for mood in moods:
+            print(f"\n=== Generating {mood} image ===")
+            image_url = self.generate_image(mood)
+            print(f"Image URL: {image_url}")
+            print("=" * 50)
+
+    def test_single_mood(self, mood):
+        """Test a single mood image"""
+        print(f"\n=== Testing {mood} mood ===")
+        image_url = self.generate_image(mood)
+        print(f"Image URL: {image_url}")
+        print("=" * 50)
+
 if __name__ == "__main__":
     import sys
     bot = MemeBot()
     
     if len(sys.argv) > 1:
-        if sys.argv[1] == "test":
-            # Run test mode with all scenarios
+        if sys.argv[1] == "test1":
+            print("Testing Phase 1 (PumpFun)...")
+            asyncio.run(bot.run_phase1())
+        elif sys.argv[1] == "test2":
+            print("Testing Phase 2 (DexScreener)...")
+            asyncio.run(bot.run_phase2())
+        elif sys.argv[1] == "test":
             bot.test_mode()
-        elif sys.argv[1].replace('.', '').replace('-', '').isdigit():
-            # Test specific price change
-            test_change = float(sys.argv[1])
-            bot.test_mode(test_change)
+        elif sys.argv[1] == "images":
+            bot.test_images()
+        elif sys.argv[1] == "mood":  # New option
+            if len(sys.argv) > 2:
+                bot.test_single_mood(sys.argv[2])
+            else:
+                print("Please specify a mood to test")
         else:
-            print("Invalid argument. Use 'test' or provide a price change percentage.")
+            print("Invalid argument. Use 'test1', 'test2', 'test', 'images', or 'mood <mood_name>'")
     else:
-        # Normal bot operation
-        bot.run_once() 
+        asyncio.run(bot.run()) 
