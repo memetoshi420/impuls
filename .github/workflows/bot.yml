@@ -26,5 +26,5 @@ jobs:
           TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
         run: |
           echo "Starting bot run..."
-          python bot.py test  # Just run a single check
+          python bot.py test2  # Ensure this runs the single check
           echo "Bot run completed"
